@@ -2665,27 +2665,24 @@ impl<'block, 'analysis, 'compilation, 'tcx> BlockVisitor<'block, 'analysis, 'com
                         // ABCDE
                         if is_analysis_target {
                             // Look up the operand from the environment and check if it is a heap allocation.
-                            let rplace = match operand {
-                                mir::Operand::Copy(place) | mir::Operand::Move(place) => place,
-                                mir::Operand::Constant(constant) => {
-                                    // TODO: Is constant alloc possible? If it is, we need to somehow grab the newly computed heap addresses that will be created using `visit_use`.
-                                    // Obviously, this `visit_use` modifies the environment, so we need to modify `visit_use` if this is the case.
-                                    unreachable!("Is constant alloc possible?")
+                            match operand {
+                                mir::Operand::Copy(rplace) | mir::Operand::Move(rplace) => {
+                                    let rpath = self.visit_rh_place(&rplace);
+                                    // TODO: expand rpath using try_expand_source_pattern?
+                                    // Probably not because only PathSelector::{ConstantIndex, ConstantSlice} are expanded, and our pointers should not be in this form.
+                                    for (p, v) in self.bv.current_environment.value_map.iter() {
+                                        if p.is_rooted_by(&rpath) {
+                                            // (weak) update with v
+                                            self.bv
+                                                .tracked_allocations
+                                                .entry(self.bv.current_location)
+                                                .and_modify(|old_v| *old_v = old_v.join(v.clone()))
+                                                .or_insert(v.clone());
+                                        }
+                                    }
                                 }
+                                mir::Operand::Constant(_) => (),
                             };
-                            let rpath = self.visit_rh_place(rplace);
-                            // TODO: expand rpath using try_expand_source_pattern?
-                            // Probably not because only PathSelector::{ConstantIndex, ConstantSlice} are expanded, and our pointers should not be in this form.
-                            for (p, v) in self.bv.current_environment.value_map.iter() {
-                                if p.is_rooted_by(&rpath) {
-                                    // (weak) update with v
-                                    self.bv
-                                        .tracked_allocations
-                                        .entry(self.bv.current_location)
-                                        .and_modify(|old_v| *old_v = old_v.join(v.clone()))
-                                        .or_insert(v.clone());
-                                }
-                            }
                             debug!("tracked_allocations = {:?}", self.bv.tracked_allocations);
                             debug!("current_environment = {:?}", self.bv.current_environment);
                         }
@@ -2904,12 +2901,15 @@ impl<'block, 'analysis, 'compilation, 'tcx> BlockVisitor<'block, 'analysis, 'com
                         return self.visit_const(&arg_val.expect_const());
                     }
                 }
-                assume_unreachable!(
-                    "reference to unmatched generic constant argument {:?} {:?} {:?}",
-                    kind,
-                    self.type_visitor().generic_arguments,
-                    self.bv.current_span
-                );
+                debug!("kind {:?}", kind);
+                Rc::new(ConstantDomain::Unimplemented.into())
+                // Reached in aho-corasick
+                // assume_unreachable!(
+                //     "reference to unmatched generic constant argument {:?} {:?} {:?}",
+                //     kind,
+                //     self.type_visitor().generic_arguments,
+                //     self.bv.current_span
+                // );
             }
             // ZSTs, integers, `bool`, `char` and small structs are represented as scalars.
             // See the `ScalarInt` documentation for how `ScalarInt` guarantees that equal values
