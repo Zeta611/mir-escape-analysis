@@ -40,17 +40,13 @@ fn main() {
     if env::var("RUSTC_LOG").is_ok() {
         rustc_driver::init_rustc_env_logger(&early_error_handler);
     }
-    // if env::var("MIRAI_LOG").is_ok() {
-    //     let e = env_logger::Env::new()
-    //         .filter("MIRAI_LOG")
-    //         .default_filter_or("info")
-    //         .write_style("MIRAI_LOG_STYLE");
-    //     env_logger::init_from_env(e);
-    // }
+    let e = env_logger::Env::new()
+        .filter("MIRAI_LOG")
+        .write_style("MIRAI_LOG_STYLE");
     let log_file = Box::new(File::create("analysis.log").unwrap());
-    env_logger::Builder::new()
-        .target(env_logger::Target::Pipe(log_file))
-        .filter(None, LevelFilter::Warn)
+    let mut builder = env_logger::Builder::new();
+    builder
+        .filter_level(LevelFilter::Info)
         .format(|buf, record| {
             writeln!(
                 buf,
@@ -62,6 +58,8 @@ fn main() {
                 record.args()
             )
         })
+        .parse_env(e)
+        .target(env_logger::Target::Pipe(log_file))
         .init();
 
     // Get any options specified via the MIRAI_FLAGS environment variable
