@@ -50,7 +50,7 @@ fn main() {
     let log_file = Box::new(File::create("analysis.log").unwrap());
     env_logger::Builder::new()
         .target(env_logger::Target::Pipe(log_file))
-        .filter(None, LevelFilter::Info)
+        .filter(None, LevelFilter::Warn)
         .format(|buf, record| {
             writeln!(
                 buf,

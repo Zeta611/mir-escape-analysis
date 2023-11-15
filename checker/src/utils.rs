@@ -94,13 +94,16 @@ pub fn adt_contains_def_id<'tcx>(
     def_id: DefId,
     tcx: TyCtxt<'tcx>,
 ) -> bool {
+    debug!(
+        "Entered adt_contains_def_id({:?}, {:?}, {:?}, tcx)",
+        adt, args, def_id
+    );
     if adt.did() == def_id {
         return true;
     }
-    for variant in adt.variants().iter() {
-        for (_, field) in variant.fields.iter().enumerate() {
-            let field_ty = field.ty(tcx, args);
-            if ty_contains_def_id(field_ty, def_id, tcx) {
+    for arg in args.iter() {
+        if let GenericArgKind::Type(ty) = arg.unpack() {
+            if ty_contains_def_id(ty, def_id, tcx) {
                 return true;
             }
         }
@@ -110,20 +113,41 @@ pub fn adt_contains_def_id<'tcx>(
 
 #[logfn(TRACE)]
 pub fn ty_contains_def_id<'tcx>(ty: Ty<'tcx>, def_id: DefId, tcx: TyCtxt<'tcx>) -> bool {
+    debug!("Entered ty_contains_def_id({:?}, {:?}, tcx)", ty, def_id);
     match ty.kind() {
         TyKind::Adt(adt, args) => {
-            debug!("DefId {:?} in {:?}?", def_id, adt.did());
+            debug!("Kind Adt({:?}, {:?})", adt, args);
             adt_contains_def_id(adt, args, def_id, tcx)
         }
         TyKind::Array(ty, _) | TyKind::Slice(ty) | TyKind::Ref(_, ty, _) => {
+            debug!("Kind Array|Slice|Ref(_, {:?}, _)", ty);
             ty_contains_def_id(*ty, def_id, tcx)
         }
-        TyKind::RawPtr(ty_and_mut) => ty_contains_def_id(ty_and_mut.ty.into(), def_id, tcx),
+        TyKind::RawPtr(ty_and_mut) => {
+            debug!("Kind RawPtr({:?})", ty_and_mut);
+            ty_contains_def_id(ty_and_mut.ty.into(), def_id, tcx)
+        }
         // TyKind::Dynamic(predicates, _, _) => {
         //     false
         // }
-        TyKind::Tuple(types) => types.iter().any(|t| ty_contains_def_id(t, def_id, tcx)),
-        TyKind::Alias(_, projection_ty) => ty_contains_def_id(projection_ty.self_ty(), def_id, tcx),
+        TyKind::Tuple(types) => {
+            debug!("Kind Tuple({:?})", types);
+            types.iter().any(|t| ty_contains_def_id(t, def_id, tcx))
+        }
+        TyKind::Alias(_, projection_ty) => {
+            debug!("Kind Alias(_, {:?})", projection_ty);
+            if projection_ty.def_id == def_id {
+                return true;
+            }
+            for arg in projection_ty.args.iter() {
+                if let GenericArgKind::Type(ty) = arg.unpack() {
+                    if ty_contains_def_id(ty, def_id, tcx) {
+                        return true;
+                    }
+                }
+            }
+            false
+        }
         _ => false,
     }
 }
