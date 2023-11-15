@@ -943,6 +943,10 @@ pub trait AbstractValueTrait: Sized {
     fn uses(&self, variables: &HashSet<Rc<Path>>) -> bool;
     #[must_use]
     fn widen(&self, path: &Rc<Path>) -> Self;
+    #[must_use]
+    fn collect_path_address(path: &Rc<Path>) -> Vec<Rc<AbstractValue>>;
+    #[must_use]
+    fn collect_addresses(&self) -> Vec<Rc<AbstractValue>>;
 }
 
 impl AbstractValueTrait for Rc<AbstractValue> {
@@ -6965,6 +6969,114 @@ impl AbstractValueTrait for Rc<AbstractValue> {
                 self.expression_size.saturating_add(1),
             ),
             _ => self.clone(),
+        }
+    }
+
+    fn collect_path_address(path: &Rc<Path>) -> Vec<Rc<AbstractValue>> {
+        let mut result = vec![];
+        match &path.value {
+            PathEnum::Computed { value } => {
+                // Heap addresses are never wrapped in `PathEnum::Computed`
+                let mut addresses = value.collect_addresses();
+                result.append(&mut addresses);
+            }
+            PathEnum::HeapBlock { value } => result.push(value.clone()),
+            PathEnum::Offset { value, .. } => {
+                // TODO: How to consider this offset?
+                result.append(&mut value.collect_addresses());
+            }
+            PathEnum::QualifiedPath {
+                qualifier,
+                selector,
+                ..
+            } => {
+                result.append(&mut Self::collect_path_address(qualifier));
+                match selector.as_ref() {
+                    PathSelector::Index(value) => {
+                        // TODO: Consider index
+                    }
+                    PathSelector::Slice(value, ..) => {
+                        // TODO: Consider slice
+                    }
+                    _ => (),
+                }
+            }
+            _ => (),
+        }
+        result
+    }
+
+    #[logfn_inputs(TRACE)]
+    fn collect_addresses(&self) -> Vec<Rc<AbstractValue>> {
+        match &self.expression {
+            Expression::Top => vec![TOP.into()],
+            Expression::Bottom
+            | Expression::Add { .. }
+            | Expression::AddOverflows { .. }
+            | Expression::And { .. }
+            | Expression::BitAnd { .. }
+            | Expression::BitOr { .. }
+            | Expression::BitXor { .. }
+            | Expression::Div { .. }
+            | Expression::Equals { .. }
+            | Expression::GreaterOrEqual { .. }
+            | Expression::GreaterThan { .. }
+            | Expression::IntrinsicBinary { .. }
+            | Expression::LessOrEqual { .. }
+            | Expression::LessThan { .. }
+            | Expression::Mul { .. }
+            | Expression::MulOverflows { .. }
+            | Expression::Ne { .. }
+            | Expression::Offset { .. }
+            | Expression::Or { .. }
+            | Expression::Rem { .. }
+            | Expression::Shl { .. }
+            | Expression::ShlOverflows { .. }
+            | Expression::Shr { .. }
+            | Expression::ShrOverflows { .. }
+            | Expression::Sub { .. }
+            | Expression::SubOverflows { .. }
+            | Expression::BitNot { .. }
+            | Expression::IntrinsicBitVectorUnary { .. }
+            | Expression::IntrinsicFloatingPointUnary { .. }
+            | Expression::Neg { .. }
+            | Expression::LogicalNot { .. }
+            | Expression::TaggedExpression { .. }
+            | Expression::UnknownTagCheck { .. }
+            | Expression::CompileTimeConstant(..)
+            | Expression::HeapBlockLayout { .. }
+            | Expression::Memcmp { .. }
+            | Expression::UninterpretedCall { .. } => vec![],
+            Expression::HeapBlock { .. }
+            | Expression::Cast { .. }
+            | Expression::Transmute { .. } => vec![self.clone()],
+            Expression::ConditionalExpression {
+                consequent: left,
+                alternate: right,
+                ..
+            }
+            | Expression::Join { left, right } => {
+                let mut result = left.collect_addresses();
+                result.append(&mut right.collect_addresses());
+                result
+            }
+            Expression::Reference(path)
+            | Expression::InitialParameterValue { path, .. }
+            | Expression::UnknownTagField { path }
+            | Expression::Variable { path, .. } => Self::collect_path_address(path),
+            Expression::Switch { cases, default, .. } => {
+                let mut result = default.collect_addresses();
+                for (_, v) in cases {
+                    result.append(&mut v.collect_addresses());
+                }
+                result
+            }
+            Expression::UnknownModelField { path, default } => {
+                let mut result = Self::collect_path_address(path);
+                result.append(&mut default.collect_addresses());
+                result
+            }
+            Expression::WidenedJoin { operand, .. } => operand.collect_addresses(),
         }
     }
 }

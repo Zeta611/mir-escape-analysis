@@ -168,8 +168,16 @@ impl MiraiCallbacks {
             test_run: self.test_run,
             type_cache: Rc::new(RefCell::new(TypeCache::new())),
             call_graph: CallGraph::new(call_graph_config, tcx),
+            escape_analysis_targets: HashMap::new(),
+            escaping_allocations: HashMap::new(),
         };
         crate_visitor.analyze_some_bodies();
         crate_visitor.call_graph.output();
+
+        std::fs::write(
+            "analysis.json",
+            serde_json::to_string_pretty(&crate_visitor.escaping_allocations).unwrap(),
+        )
+        .unwrap();
     }
 }

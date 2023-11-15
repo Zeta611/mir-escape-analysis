@@ -30,6 +30,7 @@ doctest = false # and no doc tests
 bincode = { version = "*", features = ["i128"] }
 cargo_metadata = "*"
 clap = "3.2"
+chrono = "0.4.31"
 env_logger = "*"
 fs2 = "*"
 itertools = "*"
@@ -51,6 +52,21 @@ tar = "0.4.38"
 tempfile = "*"
 z3-sys = { version = "*", features = ["static-link-z3"], optional = true }
 
+# for RustRover beta
+rustc_abi = { path = "/Users/jay/.rustup/toolchains/escape-analysis2/lib/rustlib/rustc-src/rust/compiler/rustc_abi", optional = true }
+rustc_ast = { path = "/Users/jay/.rustup/toolchains/escape-analysis2/lib/rustlib/rustc-src/rust/compiler/rustc_ast", optional = true }
+rustc_attr = { path = "/Users/jay/.rustup/toolchains/escape-analysis2/lib/rustlib/rustc-src/rust/compiler/rustc_attr", optional = true }
+rustc_data_structures = { path = "/Users/jay/.rustup/toolchains/escape-analysis2/lib/rustlib/rustc-src/rust/compiler/rustc_data_structures", optional = true }
+rustc_driver = { path = "/Users/jay/.rustup/toolchains/escape-analysis2/lib/rustlib/rustc-src/rust/compiler/rustc_driver", optional = true }
+rustc_errors = { path = "/Users/jay/.rustup/toolchains/escape-analysis2/lib/rustlib/rustc-src/rust/compiler/rustc_errors", optional = true }
+rustc_hir = { path = "/Users/jay/.rustup/toolchains/escape-analysis2/lib/rustlib/rustc-src/rust/compiler/rustc_hir", optional = true }
+rustc_index = { path = "/Users/jay/.rustup/toolchains/escape-analysis2/lib/rustlib/rustc-src/rust/compiler/rustc_index", optional = true }
+rustc_interface = { path = "/Users/jay/.rustup/toolchains/escape-analysis2/lib/rustlib/rustc-src/rust/compiler/rustc_interface", optional = true }
+rustc_middle = { path = "/Users/jay/.rustup/toolchains/escape-analysis2/lib/rustlib/rustc-src/rust/compiler/rustc_middle", optional = true }
+rustc_session = { path = "/Users/jay/.rustup/toolchains/escape-analysis2/lib/rustlib/rustc-src/rust/compiler/rustc_session", optional = true }
+rustc_span = { path = "/Users/jay/.rustup/toolchains/escape-analysis2/lib/rustlib/rustc-src/rust/compiler/rustc_span", optional = true }
+rustc_target = { path = "/Users/jay/.rustup/toolchains/escape-analysis2/lib/rustlib/rustc-src/rust/compiler/rustc_target", optional = true }
+
 [dev-dependencies]
 walkdir = "*"
 
@@ -68,3 +84,6 @@ default = ["z3"]
 z3 = ["dep:z3-sys"]
 
 
+[package.metadata.rust-analyzer]
+# This package uses rustc crates.
+rustc_private=true

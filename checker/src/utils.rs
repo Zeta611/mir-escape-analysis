@@ -17,7 +17,7 @@ use rustc_hir::Node;
 use rustc_middle::ty;
 use rustc_middle::ty::print::{FmtPrinter, Printer};
 use rustc_middle::ty::{
-    FloatTy, GenericArgKind, GenericArgsRef, IntTy, Ty, TyCtxt, TyKind, UintTy,
+    AdtDef, FloatTy, GenericArgKind, GenericArgsRef, IntTy, Ty, TyCtxt, TyKind, UintTy,
 };
 
 /// Returns the location of the rust system binaries that are associated with this build of Mirai.
@@ -85,6 +85,47 @@ pub fn contains_function<'tcx>(ty: Ty<'tcx>, tcx: TyCtxt<'tcx>) -> bool {
         }
     }
     false
+}
+
+#[logfn(TRACE)]
+pub fn adt_contains_def_id<'tcx>(
+    adt: &AdtDef,
+    args: &GenericArgsRef<'tcx>,
+    def_id: DefId,
+    tcx: TyCtxt<'tcx>,
+) -> bool {
+    if adt.did() == def_id {
+        return true;
+    }
+    for variant in adt.variants().iter() {
+        for (_, field) in variant.fields.iter().enumerate() {
+            let field_ty = field.ty(tcx, args);
+            if ty_contains_def_id(field_ty, def_id, tcx) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+#[logfn(TRACE)]
+pub fn ty_contains_def_id<'tcx>(ty: Ty<'tcx>, def_id: DefId, tcx: TyCtxt<'tcx>) -> bool {
+    match ty.kind() {
+        TyKind::Adt(adt, args) => {
+            debug!("DefId {:?} in {:?}?", def_id, adt.did());
+            adt_contains_def_id(adt, args, def_id, tcx)
+        }
+        TyKind::Array(ty, _) | TyKind::Slice(ty) | TyKind::Ref(_, ty, _) => {
+            ty_contains_def_id(*ty, def_id, tcx)
+        }
+        TyKind::RawPtr(ty_and_mut) => ty_contains_def_id(ty_and_mut.ty.into(), def_id, tcx),
+        // TyKind::Dynamic(predicates, _, _) => {
+        //     false
+        // }
+        TyKind::Tuple(types) => types.iter().any(|t| ty_contains_def_id(t, def_id, tcx)),
+        TyKind::Alias(_, projection_ty) => ty_contains_def_id(projection_ty.self_ty(), def_id, tcx),
+        _ => false,
+    }
 }
 
 /// Returns true if the function identified by def_id is a public function.

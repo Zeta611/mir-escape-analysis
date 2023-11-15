@@ -9,7 +9,9 @@ use std::convert::TryFrom;
 use std::fmt::{Debug, Formatter, Result};
 use std::rc::Rc;
 
+use itertools::Itertools;
 use log_derive::*;
+
 use mirai_annotations::*;
 use rustc_hir::def_id::DefId;
 use rustc_index::{Idx, IndexVec};
@@ -108,7 +110,8 @@ impl<'block, 'analysis, 'compilation, 'tcx> BlockVisitor<'block, 'analysis, 'com
     /// Calls a specialized visitor for each kind of statement.
     #[logfn_inputs(DEBUG)]
     fn visit_statement(&mut self, location: mir::Location, statement: &mir::Statement<'tcx>) {
-        debug!("env {:?}", self.bv.current_environment);
+        debug!("statement {:?} ({:?})", statement, location);
+        debug!("env_i {:?}", self.bv.current_environment);
         self.bv.current_location = location;
         let mir::Statement { kind, source_info } = statement;
         self.bv.current_span = source_info.span;
@@ -134,6 +137,7 @@ impl<'block, 'analysis, 'compilation, 'tcx> BlockVisitor<'block, 'analysis, 'com
             mir::StatementKind::Nop => (),
             mir::StatementKind::PlaceMention(_) => (),
         }
+        debug!("env_f {:?}", self.bv.current_environment);
     }
 
     /// Write the RHS Rvalue to the LHS Place.
@@ -281,7 +285,8 @@ impl<'block, 'analysis, 'compilation, 'tcx> BlockVisitor<'block, 'analysis, 'com
         kind: &mir::TerminatorKind<'tcx>,
         source_info: mir::SourceInfo,
     ) {
-        debug!("env {:?}", self.bv.current_environment);
+        debug!("terminator {:?} ({:?})", kind, location);
+        debug!("env_i {:?}", self.bv.current_environment);
         self.bv.current_location = location;
         self.bv.current_span = source_info.span;
         match kind {
@@ -331,6 +336,7 @@ impl<'block, 'analysis, 'compilation, 'tcx> BlockVisitor<'block, 'analysis, 'com
                 self.visit_inline_asm(destination);
             }
         }
+        debug!("env_f {:?}", self.bv.current_environment);
     }
 
     /// block should have one successor in the graph; we jump there
@@ -625,6 +631,9 @@ impl<'block, 'analysis, 'compilation, 'tcx> BlockVisitor<'block, 'analysis, 'com
             {
                 self.report_missing_summary();
             }
+
+            // We couldn't find a summary for the function we are calling.
+            // If the destination type is
             return;
         };
         let callee_def_id = func_ref_to_call
@@ -764,6 +773,64 @@ impl<'block, 'analysis, 'compilation, 'tcx> BlockVisitor<'block, 'analysis, 'com
         } else {
             call_visitor.transfer_and_refine_into_current_environment(&function_summary);
         }
+
+        // ABCDE
+        // Add paths to arguments where pointers of interest could potentially escape
+        let mut candidate_paths = args
+            .iter()
+            .zip(call_visitor.actual_argument_types)
+            .zip(call_visitor.actual_args)
+            .filter_map(|((arg, ty), (p, _v))| {
+                if let mir::Operand::Move(_) = arg {
+                    // Moved arguments are no longer available
+                    None
+                } else if self
+                    .bv
+                    .cv
+                    .escape_analysis_targets
+                    .keys()
+                    .map(|adt_def| adt_def.did())
+                    .any(|def_id| utils::ty_contains_def_id(ty, def_id, self.bv.tcx))
+                {
+                    debug!("adding: arg {:?} ty {:?} p {:?}", arg, ty, p);
+                    Some(p.clone())
+                } else {
+                    None
+                }
+            })
+            .collect_vec();
+
+        // Now add the path to the return value if pointers of interest could potentially escape
+        let rpath = self.visit_rh_place(&destination);
+        let rty = self
+            .type_visitor()
+            .get_path_rustc_type(&rpath, self.bv.current_span);
+        if self
+            .bv
+            .cv
+            .escape_analysis_targets
+            .keys()
+            .map(|adt_def| adt_def.did())
+            .any(|def_id| utils::ty_contains_def_id(rty, def_id, self.bv.tcx))
+        {
+            candidate_paths.push(rpath);
+        }
+
+        candidate_paths.iter().for_each(|cand_path| {
+            debug!("transformed: env {:?}", self.bv.current_environment);
+            debug!("transformed: path {:?}", cand_path);
+            for (p, v) in self.bv.current_environment.value_map.iter() {
+                if p.is_rooted_by(&cand_path) {
+                    debug!("p {:?} is rooted by v {:?}", p, v);
+                    // (weak) update with v
+                    self.bv
+                        .tracked_allocations
+                        .entry(self.bv.current_location)
+                        .and_modify(|old_v| *old_v = old_v.join(v.clone()))
+                        .or_insert(v.clone());
+                }
+            }
+        });
     }
 
     #[logfn_inputs(TRACE)]
@@ -1798,6 +1865,10 @@ impl<'block, 'analysis, 'compilation, 'tcx> BlockVisitor<'block, 'analysis, 'com
     #[logfn_inputs(TRACE)]
     fn visit_used_move(&mut self, target_path: Rc<Path>, place: &mir::Place<'tcx>) {
         let rpath = self.visit_rh_place(place);
+        debug!(
+            "visit_used_move target: {:?}; rpath: {:?}",
+            target_path, rpath
+        );
         let rtype = self
             .type_visitor()
             .get_rustc_place_type(place, self.bv.current_span);
@@ -2082,7 +2153,7 @@ impl<'block, 'analysis, 'compilation, 'tcx> BlockVisitor<'block, 'analysis, 'com
                         return;
                     }
                 };
-                if matches!(cast_kind, mir::CastKind::PointerCoercion(PointerCoercion::Unsize)){
+                if matches!(cast_kind, mir::CastKind::PointerCoercion(PointerCoercion::Unsize)) {
                     // Unsize a pointer/reference value, e.g., `&[T; n]` to
                     // `&[T]`. Note that the source could be a thin or fat pointer.
                     // This will do things like convert thin pointers to fat
@@ -2141,7 +2212,7 @@ impl<'block, 'analysis, 'compilation, 'tcx> BlockVisitor<'block, 'analysis, 'com
                     return;
                 }
                 let mut source_path = self.visit_rh_place(place);
-                if matches!(cast_kind, mir::CastKind::PointerCoercion(PointerCoercion::ClosureFnPointer(_))){
+                if matches!(cast_kind, mir::CastKind::PointerCoercion(PointerCoercion::ClosureFnPointer(_))) {
                     source_path = Path::new_function(source_path)
                 }
                 self.bv
@@ -2538,6 +2609,17 @@ impl<'block, 'analysis, 'compilation, 'tcx> BlockVisitor<'block, 'analysis, 'com
                 let adt_def = self.bv.tcx.adt_def(def);
                 let variant_def = &adt_def.variants()[*variant_idx];
                 let adt_ty = self.bv.tcx.type_of(def).skip_binder();
+
+                // If this ADT is subject to our special transformation, we need to collect the heap addresses.
+                // There should be either one or two addresses, depending on whether we introduce pointer indirection to both safe/unsafe data or not.
+                let is_analysis_target = self
+                    .bv
+                    .cv
+                    .escape_analysis_targets
+                    .keys()
+                    .map(|adt_def| adt_def.did())
+                    .any(|def_id| utils::adt_contains_def_id(&adt_def, args, def_id, self.bv.tcx));
+
                 if adt_def.is_enum() {
                     let discr_path = Path::new_discriminant(path.clone());
                     let discr_ty = adt_ty.discriminant_ty(self.bv.tcx);
@@ -2578,6 +2660,36 @@ impl<'block, 'analysis, 'compilation, 'tcx> BlockVisitor<'block, 'analysis, 'com
                     self.type_visitor_mut()
                         .set_path_rustc_type(field_path.clone(), field_ty);
                     if let Some(operand) = operands.get(i.into()) {
+                        debug!("visit_aggregate({:?} > {:?}): field {:?} of type {:?} assigned with {:?}", adt_def, variant_def, field_path, field_ty, operand);
+
+                        // ABCDE
+                        if is_analysis_target {
+                            // Look up the operand from the environment and check if it is a heap allocation.
+                            let rplace = match operand {
+                                mir::Operand::Copy(place) | mir::Operand::Move(place) => place,
+                                mir::Operand::Constant(constant) => {
+                                    // TODO: Is constant alloc possible? If it is, we need to somehow grab the newly computed heap addresses that will be created using `visit_use`.
+                                    // Obviously, this `visit_use` modifies the environment, so we need to modify `visit_use` if this is the case.
+                                    unreachable!("Is constant alloc possible?")
+                                }
+                            };
+                            let rpath = self.visit_rh_place(rplace);
+                            // TODO: expand rpath using try_expand_source_pattern?
+                            // Probably not because only PathSelector::{ConstantIndex, ConstantSlice} are expanded, and our pointers should not be in this form.
+                            for (p, v) in self.bv.current_environment.value_map.iter() {
+                                if p.is_rooted_by(&rpath) {
+                                    // (weak) update with v
+                                    self.bv
+                                        .tracked_allocations
+                                        .entry(self.bv.current_location)
+                                        .and_modify(|old_v| *old_v = old_v.join(v.clone()))
+                                        .or_insert(v.clone());
+                                }
+                            }
+                            debug!("tracked_allocations = {:?}", self.bv.tracked_allocations);
+                            debug!("current_environment = {:?}", self.bv.current_environment);
+                        }
+
                         self.visit_use(field_path, operand);
                     } else {
                         debug!(

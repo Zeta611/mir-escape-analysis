@@ -3,6 +3,7 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
+use itertools::Itertools;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::convert::TryFrom;
@@ -78,6 +79,8 @@ pub struct BodyVisitor<'analysis, 'compilation, 'tcx> {
     pub block_to_call: HashMap<mir::Location, DefId>,
     pub treat_as_foreign: bool,
     type_visitor: TypeVisitor<'tcx>,
+
+    pub tracked_allocations: HashMap<mir::Location, Rc<AbstractValue>>,
 }
 
 impl<'analysis, 'compilation, 'tcx> Debug for BodyVisitor<'analysis, 'compilation, 'tcx> {
@@ -147,6 +150,8 @@ impl<'analysis, 'compilation, 'tcx> BodyVisitor<'analysis, 'compilation, 'tcx> {
             block_to_call: HashMap::default(),
             treat_as_foreign: false,
             type_visitor: TypeVisitor::new(def_id, mir, tcx, type_cache),
+
+            tracked_allocations: HashMap::default(),
         }
     }
 
@@ -276,6 +281,7 @@ impl<'analysis, 'compilation, 'tcx> BodyVisitor<'analysis, 'compilation, 'tcx> {
                 };
                 let return_type_index = self.type_visitor().get_index_for(return_type);
 
+                debug!("Summarizing {}", self.function_name);
                 result = summaries::summarize(
                     self.mir.arg_count,
                     self.exit_environment.as_ref(),
@@ -296,6 +302,97 @@ impl<'analysis, 'compilation, 'tcx> BodyVisitor<'analysis, 'compilation, 'tcx> {
             for (location2, callee_defid2) in self.block_to_call.iter() {
                 if location1 != location2 && location1.dominates(*location2, dominators) {
                     self.cv.call_graph.add_dom(*callee_defid1, *callee_defid2);
+                }
+            }
+        }
+
+        // ABCDE
+        info!("analysis of {} returned {:?}", self.function_name, result);
+        debug!("type cache {:?}", self.type_visitor().get_path_type_cache());
+        debug!(
+            "side-effects {:?}",
+            result
+                .side_effects
+                .iter()
+                .map(|(p, v)| {
+                    (
+                        p,
+                        v,
+                        self.type_visitor()
+                            .get_path_rustc_type(p, self.current_span),
+                    )
+                })
+                .collect_vec()
+        );
+        debug!("current env {:?}", self.current_environment);
+        debug!("tracked allocs {:?}", self.tracked_allocations);
+
+        'alloc: for (loc, value) in self.tracked_allocations.iter() {
+            for addr in value.collect_addresses().iter() {
+                debug!("Collected addr {:?} for loc {:?})", addr, loc);
+                match &addr.expression {
+                    Expression::Top => {
+                        // TODO: Maybe if the side_effects does not contain heap addresses, might not escape!
+                        info!(
+                            "{:?}: heap allocation {:?} ({:?}) might escape",
+                            self.function_name, loc, addr
+                        );
+                        self.cv
+                            .escaping_allocations
+                            .entry(self.function_name.to_string())
+                            .and_modify(|v| {
+                                v.push((format!("{:?}", loc), addr.clone()));
+                            })
+                            .or_insert(vec![(format!("{:?}", loc), addr.clone())]);
+                        continue 'alloc;
+                    }
+                    Expression::HeapBlock { .. }
+                    | Expression::Cast { .. }
+                    | Expression::Transmute { .. } => {
+                        for (p, v) in result.side_effects.iter() {
+                            // TODO: Pre-evaluate the types of the side effects for efficiency
+                            let ty = self
+                                .type_visitor()
+                                .get_path_rustc_type(p, self.current_span);
+                            let found_target_ty = self.cv.escape_analysis_targets.iter().any(
+                                |(adt_def, opt_box_wrapped_types)| {
+                                    utils::ty_contains_def_id(ty, adt_def.did(), self.tcx)
+                                        || opt_box_wrapped_types
+                                            .iter()
+                                            .any(|wrapped_type| ty.contains(*wrapped_type))
+                                },
+                            );
+                            if !found_target_ty {
+                                continue;
+                            }
+
+                            let collected = v.collect_addresses();
+                            debug!("Side effect {:?} = {:?} contains {:?}", p, v, collected);
+                            // let ty = self.type_visitor().get_path_rustc_type(p, self.current_span);
+                            // if let Some(adt_def) = ty.ty_adt_def() {
+                            //     if special_adts.contains(&adt_def.variant(0u32.into()).name.as_str())
+                            if collected.contains(addr)
+                                || collected.contains(&Rc::new(abstract_value::TOP))
+                            {
+                                info!(
+                                    "{:?}: heap allocation {:?} ({:?}) might escape",
+                                    self.function_name, loc, addr
+                                );
+                                self.cv
+                                    .escaping_allocations
+                                    .entry(self.function_name.to_string())
+                                    .and_modify(|v| {
+                                        v.push((format!("{:?}", loc), addr.clone()));
+                                    })
+                                    .or_insert(vec![(format!("{:?}", loc), addr.clone())]);
+                                continue 'alloc;
+                                // }
+                            }
+                        }
+                    }
+                    _ => unreachable!(
+                        "This kind of expression is not allowed in collect_addresses()"
+                    ),
                 }
             }
         }
@@ -2741,6 +2838,7 @@ impl<'analysis, 'compilation, 'tcx> BodyVisitor<'analysis, 'compilation, 'tcx> {
         let block_path = Path::new_heap_block(block.clone());
         self.type_visitor_mut()
             .set_path_rustc_type(block_path.clone(), ty);
+        debug!("set type of {:?} to {:?}", block_path, ty);
         let layout_path = Path::new_layout(block_path.clone());
         let layout = AbstractValue::make_from(
             Expression::HeapBlockLayout {

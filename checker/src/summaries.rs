@@ -229,6 +229,7 @@ pub fn summarize(
     );
     let mut preconditions: Vec<Precondition> = add_provenance(preconditions, tcx);
     let mut side_effects = if let Some(exit_environment) = exit_environment {
+        debug!("env {:?}", exit_environment);
         extract_side_effects(exit_environment, argument_count)
     } else {
         vec![]

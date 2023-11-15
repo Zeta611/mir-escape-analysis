@@ -20,6 +20,7 @@ extern crate rustc_driver;
 extern crate rustc_interface;
 extern crate rustc_session;
 
+use chrono::Local;
 use itertools::Itertools;
 use log::*;
 use mirai::callbacks;
@@ -27,6 +28,8 @@ use mirai::options::Options;
 use mirai::utils;
 use mirai_annotations::*;
 use std::env;
+use std::fs::File;
+use std::io::Write;
 use std::path::Path;
 
 fn main() {
@@ -37,12 +40,29 @@ fn main() {
     if env::var("RUSTC_LOG").is_ok() {
         rustc_driver::init_rustc_env_logger(&early_error_handler);
     }
-    if env::var("MIRAI_LOG").is_ok() {
-        let e = env_logger::Env::new()
-            .filter("MIRAI_LOG")
-            .write_style("MIRAI_LOG_STYLE");
-        env_logger::init_from_env(e);
-    }
+    // if env::var("MIRAI_LOG").is_ok() {
+    //     let e = env_logger::Env::new()
+    //         .filter("MIRAI_LOG")
+    //         .default_filter_or("info")
+    //         .write_style("MIRAI_LOG_STYLE");
+    //     env_logger::init_from_env(e);
+    // }
+    let log_file = Box::new(File::create("analysis.log").unwrap());
+    env_logger::Builder::new()
+        .target(env_logger::Target::Pipe(log_file))
+        .filter(None, LevelFilter::Info)
+        .format(|buf, record| {
+            writeln!(
+                buf,
+                "[{} {} {}:{}] {}",
+                Local::now().format("%Y-%m-%d %H:%M:%S%.3f"),
+                record.level(),
+                record.file().unwrap_or("unknown"),
+                record.line().unwrap_or(0),
+                record.args()
+            )
+        })
+        .init();
 
     // Get any options specified via the MIRAI_FLAGS environment variable
     let mut options = Options::default();

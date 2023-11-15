@@ -4,6 +4,8 @@ resolver = "2"
 members = [
     "annotations",
     "checker",
+    "escape_analysis",
+    "escape_analysis_derive",
     "standard_contracts",
     "examples/taint",
     "examples/shopping_cart",

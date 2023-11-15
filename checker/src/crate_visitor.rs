@@ -15,16 +15,21 @@ use std::ops::Deref;
 use std::rc::Rc;
 use std::time::Instant;
 
+use itertools::Itertools;
+
 use log::*;
 use log_derive::{logfn, logfn_inputs};
 
 use mirai_annotations::*;
 use rustc_errors::{Diagnostic, DiagnosticBuilder};
 use rustc_hir::def_id::{DefId, DefIndex};
-use rustc_middle::mir;
-use rustc_middle::ty::{GenericArgsRef, TyCtxt, UnevaluatedConst};
+use rustc_middle::ty::fast_reject::SimplifiedType;
+use rustc_middle::ty::{AdtDef, GenericArgsRef, List, TyCtxt, UnevaluatedConst};
+use rustc_middle::{mir, ty};
 use rustc_session::Session;
+use rustc_span::sym;
 
+use crate::abstract_value::AbstractValue;
 use crate::body_visitor::BodyVisitor;
 use crate::call_graph::CallGraph;
 use crate::constant_domain::ConstantValueCache;
@@ -58,6 +63,8 @@ pub struct CrateVisitor<'compilation, 'tcx> {
     pub type_cache: Rc<RefCell<TypeCache<'tcx>>>,
     pub test_run: bool,
     pub call_graph: CallGraph<'tcx>,
+    pub escape_analysis_targets: HashMap<AdtDef<'tcx>, Vec<ty::Ty<'tcx>>>,
+    pub escaping_allocations: HashMap<String, Vec<(String, Rc<AbstractValue>)>>,
 }
 
 impl<'compilation, 'tcx> Debug for CrateVisitor<'compilation, 'tcx> {
@@ -67,12 +74,61 @@ impl<'compilation, 'tcx> Debug for CrateVisitor<'compilation, 'tcx> {
 }
 
 impl<'compilation, 'tcx> CrateVisitor<'compilation, 'tcx> {
+    fn collect_escape_analysis_targets(&mut self) {
+        let diagnostic_items_map = &self.tcx.all_diagnostic_items(()).name_to_id;
+        match (
+            diagnostic_items_map.get(&sym::OptBox),
+            diagnostic_items_map.get(&sym::EscapeAnalysis),
+        ) {
+            (Some(opt_box_def_id), Some(escape_analysis_trait_id)) => {
+                info!(
+                    "OptBox {:?}, EscapeAnalysis {:?} found",
+                    opt_box_def_id, escape_analysis_trait_id
+                );
+                for simple_ty in self
+                    .tcx
+                    .trait_impls_of(*escape_analysis_trait_id)
+                    .non_blanket_impls()
+                    .keys()
+                {
+                    info!(
+                        "simple_ty {:?} implements {:?}",
+                        simple_ty, escape_analysis_trait_id
+                    );
+                    if let SimplifiedType::Adt(def_id) = simple_ty {
+                        let adt_def: AdtDef = self.tcx.adt_def(def_id);
+                        let wrapped_types = adt_def
+                            .all_fields()
+                            .filter_map(|field| match field.ty(self.tcx, &List::empty()).kind() {
+                                ty::Adt(field_adt_def, args)
+                                    if field_adt_def.did() == *opt_box_def_id =>
+                                {
+                                    let wrapped_ty = args.type_at(0);
+                                    Some(wrapped_ty)
+                                }
+                                _ => None,
+                            })
+                            .collect_vec();
+                        info!("OptBox wrapped: {:?}", wrapped_types);
+                        self.escape_analysis_targets.insert(adt_def, wrapped_types);
+                    } else {
+                        warn!("unsupported escape analysis target {:?}", simple_ty)
+                    }
+                }
+            }
+            (_, _) => warn!("No EscapeAnalysis impls or no OptBox's"),
+        }
+    }
+
     /// Analyze some of the bodies in the crate that is being compiled.
     #[logfn(TRACE)]
     pub fn analyze_some_bodies(&mut self) {
         let start_instant = Instant::now();
         // Determine the functions we want to analyze.
         let selected_functions = self.get_selected_function_list();
+
+        // Collect the targets of the escape analysis.
+        self.collect_escape_analysis_targets();
 
         // Get the entry function
         let entry_fn_def_id = if let Some((def_id, _)) = self.tcx.entry_fn(()) {

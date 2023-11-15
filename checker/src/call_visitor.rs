@@ -2902,6 +2902,10 @@ impl<'call, 'block, 'analysis, 'compilation, 'tcx>
                         &self.block_visitor.bv.current_environment,
                         self.block_visitor.bv.fresh_variable_offset,
                     );
+                    debug!(
+                        "path {:?}, value {:?} refined into rpath {:?}, rvalue {:?}",
+                        path, value, rpath, rvalue
+                    );
                     if rvalue.expression.infer_type() == ExpressionType::NonPrimitive {
                         let source_path = Path::get_as_path(rvalue.clone());
                         let source_type = self
